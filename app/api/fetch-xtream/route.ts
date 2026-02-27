@@ -1,107 +1,102 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { buildApiUrl, normalizeServer, XtreamCredentials, XtreamStream } from '@/lib/xtream';
+import { normalizeServer, XtreamCredentials, XtreamStream } from '@/lib/xtream';
 
 export const maxDuration = 60;
+
+function parseM3U(m3uText: string, creds: XtreamCredentials): XtreamStream[] {
+  const streams: XtreamStream[] = [];
+  const lines = m3uText.split('\n');
+  
+  let currentStream: Partial<XtreamStream> | null = null;
+  
+  for (const line of lines) {
+    const trimmed = line.trim();
+    
+    if (trimmed.startsWith('#EXTINF:')) {
+      // Parse EXTINF line
+      currentStream = {};
+      
+      // Extract tvg-logo
+      const logoMatch = trimmed.match(/tvg-logo="([^"]+)"/);
+      if (logoMatch) currentStream.stream_icon = logoMatch[1];
+      
+      // Extract group-title (category)
+      const groupMatch = trimmed.match(/group-title="([^"]+)"/);
+      if (groupMatch) currentStream.category_name = groupMatch[1];
+      
+      // Extract stream name (everything after the last comma)
+      const nameMatch = trimmed.match(/,(.+)$/);
+      if (nameMatch) currentStream.name = nameMatch[1].trim();
+      
+    } else if (trimmed && !trimmed.startsWith('#') && currentStream) {
+      // This is the URL line
+      // Extract stream type and ID from URL
+      // Format: http://server/live/username/password/STREAM_ID.ext
+      // Or: http://server/movie/username/password/STREAM_ID.ext
+      // Or: http://server/series/username/password/STREAM_ID.ext
+      
+      const urlMatch = trimmed.match(/\/(live|movie|series)\/[^\/]+\/[^\/]+\/(\d+)\.([a-z0-9]+)$/i);
+      if (urlMatch) {
+        const [, type, id, ext] = urlMatch;
+        currentStream.stream_id = parseInt(id);
+        currentStream.container_extension = ext;
+        
+        if (type === 'live') {
+          currentStream.type = 'live';
+        } else if (type === 'movie') {
+          currentStream.type = 'vod';
+        } else if (type === 'series') {
+          currentStream.type = 'series';
+        }
+        
+        if (currentStream.stream_id && currentStream.type && currentStream.name) {
+          streams.push(currentStream as XtreamStream);
+        }
+      }
+      
+      currentStream = null;
+    }
+  }
+  
+  return streams;
+}
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
   const { server, username, password } = body;
+
   if (!server || !username || !password) {
     return NextResponse.json({ error: 'Saknar inloggningsuppgifter' }, { status: 400 });
   }
+
   const creds: XtreamCredentials = { server: normalizeServer(server), username, password };
+
   try {
-    const authUrl = buildApiUrl(creds, 'get_user_info');
+    // First verify authentication
+    const base = normalizeServer(server);
+    const authUrl = `${base}/player_api.php?username=${username}&password=${password}&action=get_user_info`;
     const authRes = await fetch(authUrl, { cache: 'no-store' });
-    if (!authRes.ok) return NextResponse.json({ error: 'Kunde inte ansluta till servern' }, { status: 502 });
+    
+    if (!authRes.ok) {
+      return NextResponse.json({ error: 'Kunde inte ansluta till servern' }, { status: 502 });
+    }
+    
     const authData = await authRes.json();
-    if (!authData?.user_info) return NextResponse.json({ error: 'Ogiltiga inloggningsuppgifter' }, { status: 401 });
-
-    const [liveCatRes, liveRes, vodCatRes, vodRes, seriesCatRes, seriesListRes] = await Promise.all([
-      fetch(buildApiUrl(creds, 'get_live_categories'), { cache: 'no-store' }),
-      fetch(buildApiUrl(creds, 'get_live_streams'), { cache: 'no-store' }),
-      fetch(buildApiUrl(creds, 'get_vod_categories'), { cache: 'no-store' }),
-      fetch(buildApiUrl(creds, 'get_vod_streams'), { cache: 'no-store' }),
-      fetch(buildApiUrl(creds, 'get_series_categories'), { cache: 'no-store' }),
-      fetch(buildApiUrl(creds, 'get_series'), { cache: 'no-store' }),
-    ]);
-
-    const liveCategories = await liveCatRes.json().catch(() => []);
-    const liveStreamsRaw = await liveRes.json().catch(() => []);
-    const vodCategories = await vodCatRes.json().catch(() => []);
-    const vodStreamsRaw = await vodRes.json().catch(() => []);
-    const seriesCategories = await seriesCatRes.json().catch(() => []);
-    const seriesList = await seriesListRes.json().catch(() => []);
-
-    const liveCatMap: Record<string, string> = {};
-    if (Array.isArray(liveCategories)) liveCategories.forEach((c: any) => liveCatMap[c.category_id] = c.category_name);
-    const vodCatMap: Record<string, string> = {};
-    if (Array.isArray(vodCategories)) vodCategories.forEach((c: any) => vodCatMap[c.category_id] = c.category_name);
-    const seriesCatMap: Record<string, string> = {};
-    if (Array.isArray(seriesCategories)) seriesCategories.forEach((c: any) => seriesCatMap[c.category_id] = c.category_name);
-
-    // Fetch episodes for ALL series (not just 200)
-    const seriesEpisodes: XtreamStream[] = [];
-    if (Array.isArray(seriesList) && seriesList.length > 0) {
-      const BATCH = 20; // Increased batch size for efficiency
-      const limit = seriesList.length; // Process ALL series
-      for (let i = 0; i < limit; i += BATCH) {
-        const batch = seriesList.slice(i, i + BATCH);
-        const results = await Promise.allSettled(
-          batch.map((s: any) =>
-            fetch(buildApiUrl(creds, 'get_series_info', { series_id: String(s.series_id) }), { cache: 'no-store' })
-              .then(r => r.json())
-              .catch(() => null)
-          )
-        );
-        for (let j = 0; j < batch.length; j++) {
-          const seriesEntry = batch[j];
-          const result = results[j];
-          if (result.status !== 'fulfilled' || !result.value) continue;
-          const info = result.value;
-          const episodes: any[] = [];
-          if (info.episodes && typeof info.episodes === 'object') {
-            for (const season of Object.values(info.episodes)) {
-              if (Array.isArray(season)) episodes.push(...season);
-            }
-          }
-          for (const ep of episodes) {
-            if (!ep.id) continue;
-            seriesEpisodes.push({
-              stream_id: parseInt(ep.id),
-              name: `${seriesEntry.name} - S${String(ep.season).padStart(2, '0')}E${String(ep.episode_num).padStart(2, '0')}${ep.title ? ' - ' + ep.title : ''}`,
-              type: 'series' as const,
-              stream_icon: seriesEntry.cover || seriesEntry.stream_icon,
-              category_id: seriesEntry.category_id,
-              category_name: seriesCatMap[seriesEntry.category_id] || '',
-              container_extension: ep.container_extension || 'mkv',
-            });
-          }
-        }
-      }
+    if (!authData?.user_info) {
+      return NextResponse.json({ error: 'Ogiltiga inloggningsuppgifter' }, { status: 401 });
     }
 
-    // Also pass container_extension for VOD streams
-    const streams: XtreamStream[] = [
-      ...(Array.isArray(liveStreamsRaw) ? liveStreamsRaw.map((s: any) => ({
-        stream_id: parseInt(s.stream_id),
-        name: s.name,
-        type: 'live' as const,
-        stream_icon: s.stream_icon,
-        category_id: s.category_id,
-        category_name: liveCatMap[s.category_id] || '',
-      })) : []),
-      ...(Array.isArray(vodStreamsRaw) ? vodStreamsRaw.map((s: any) => ({
-        stream_id: parseInt(s.stream_id),
-        name: s.name,
-        type: 'vod' as const,
-        stream_icon: s.stream_icon,
-        category_id: s.category_id,
-        category_name: vodCatMap[s.category_id] || '',
-        container_extension: s.container_extension || 'mp4',
-      })) : []),
-      ...seriesEpisodes,
-    ];
+    // Fetch M3U playlist with all content
+    const m3uUrl = `${base}/get.php?username=${username}&password=${password}&type=m3u_plus&output=ts`;
+    const m3uRes = await fetch(m3uUrl, { cache: 'no-store' });
+    
+    if (!m3uRes.ok) {
+      return NextResponse.json({ error: 'Kunde inte hämta spellista' }, { status: 502 });
+    }
+    
+    const m3uText = await m3uRes.text();
+    const streams = parseM3U(m3uText, creds);
+
     return NextResponse.json({ streams });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
