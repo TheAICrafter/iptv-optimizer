@@ -3,62 +3,15 @@ import { normalizeServer, XtreamCredentials, XtreamStream } from '@/lib/xtream';
 
 export const maxDuration = 60;
 
-function parseM3U(m3uText: string, creds: XtreamCredentials): XtreamStream[] {
-  const streams: XtreamStream[] = [];
-  const lines = m3uText.split('\n');
-  
-  let currentStream: Partial<XtreamStream> | null = null;
-  
-  for (const line of lines) {
-    const trimmed = line.trim();
-    
-    if (trimmed.startsWith('#EXTINF:')) {
-      // Parse EXTINF line
-      currentStream = {};
-      
-      // Extract tvg-logo
-      const logoMatch = trimmed.match(/tvg-logo="([^"]+)"/);
-      if (logoMatch) currentStream.stream_icon = logoMatch[1];
-      
-      // Extract group-title (category)
-      const groupMatch = trimmed.match(/group-title="([^"]+)"/);
-      if (groupMatch) currentStream.category_name = groupMatch[1];
-      
-      // Extract stream name (everything after the last comma)
-      const nameMatch = trimmed.match(/,(.+)$/);
-      if (nameMatch) currentStream.name = nameMatch[1].trim();
-      
-    } else if (trimmed && !trimmed.startsWith('#') && currentStream) {
-      // This is the URL line
-      // Extract stream type and ID from URL
-      // Format: http://server/live/username/password/STREAM_ID.ext
-      // Or: http://server/movie/username/password/STREAM_ID.ext
-      // Or: http://server/series/username/password/STREAM_ID.ext
-      
-      const urlMatch = trimmed.match(/\/(live|movie|series)\/[^\/]+\/[^\/]+\/(\d+)\.([a-z0-9]+)$/i);
-      if (urlMatch) {
-        const [, type, id, ext] = urlMatch;
-        currentStream.stream_id = parseInt(id);
-        currentStream.container_extension = ext;
-        
-        if (type === 'live') {
-          currentStream.type = 'live';
-        } else if (type === 'movie') {
-          currentStream.type = 'vod';
-        } else if (type === 'series') {
-          currentStream.type = 'series';
-        }
-        
-        if (currentStream.stream_id && currentStream.type && currentStream.name) {
-          streams.push(currentStream as XtreamStream);
-        }
-      }
-      
-      currentStream = null;
-    }
-  }
-  
-  return streams;
+function buildApiUrl(creds: XtreamCredentials, action: string, extra: Record<string, string> = {}): string {
+  const base = normalizeServer(creds.server);
+  const params = new URLSearchParams({
+    username: creds.username,
+    password: creds.password,
+    action,
+    ...extra,
+  });
+  return `${base}/player_api.php?${params.toString()}`;
 }
 
 export async function POST(req: NextRequest) {
@@ -72,9 +25,8 @@ export async function POST(req: NextRequest) {
   const creds: XtreamCredentials = { server: normalizeServer(server), username, password };
 
   try {
-    // First verify authentication
-    const base = normalizeServer(server);
-    const authUrl = `${base}/player_api.php?username=${username}&password=${password}&action=get_user_info`;
+    // Verify authentication
+    const authUrl = buildApiUrl(creds, 'get_user_info');
     const authRes = await fetch(authUrl, { cache: 'no-store' });
     
     if (!authRes.ok) {
@@ -86,16 +38,81 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Ogiltiga inloggningsuppgifter' }, { status: 401 });
     }
 
-    // Fetch M3U playlist with all content
-    const m3uUrl = `${base}/get.php?username=${username}&password=${password}&type=m3u_plus&output=ts`;
-    const m3uRes = await fetch(m3uUrl, { cache: 'no-store' });
+    const streams: XtreamStream[] = [];
+
+    // LIVE - fetch per category to avoid truncation
+    const liveCatsRes = await fetch(buildApiUrl(creds, 'get_live_categories'), { cache: 'no-store' });
+    const liveCats = await liveCatsRes.json().catch(() => []);
     
-    if (!m3uRes.ok) {
-      return NextResponse.json({ error: 'Kunde inte hämta spellista' }, { status: 502 });
+    if (Array.isArray(liveCats)) {
+      for (const cat of liveCats) {
+        const catStreamsRes = await fetch(buildApiUrl(creds, 'get_live_streams', { category_id: String(cat.category_id) }), { cache: 'no-store' });
+        const catStreams = await catStreamsRes.json().catch(() => []);
+        
+        if (Array.isArray(catStreams)) {
+          for (const item of catStreams) {
+            streams.push({
+              stream_id: parseInt(item.stream_id),
+              name: item.name,
+              type: 'live',
+              stream_icon: item.stream_icon,
+              category_id: String(cat.category_id),
+              category_name: cat.category_name,
+            });
+          }
+        }
+      }
     }
+
+    // VOD - fetch per category to avoid truncation
+    const vodCatsRes = await fetch(buildApiUrl(creds, 'get_vod_categories'), { cache: 'no-store' });
+    const vodCats = await vodCatsRes.json().catch(() => []);
     
-    const m3uText = await m3uRes.text();
-    const streams = parseM3U(m3uText, creds);
+    if (Array.isArray(vodCats)) {
+      for (const cat of vodCats) {
+        const catStreamsRes = await fetch(buildApiUrl(creds, 'get_vod_streams', { category_id: String(cat.category_id) }), { cache: 'no-store' });
+        const catStreams = await catStreamsRes.json().catch(() => []);
+        
+        if (Array.isArray(catStreams)) {
+          for (const item of catStreams) {
+            streams.push({
+              stream_id: parseInt(item.stream_id),
+              name: item.name,
+              type: 'vod',
+              stream_icon: item.stream_icon,
+              category_id: String(cat.category_id),
+              category_name: cat.category_name,
+              container_extension: item.container_extension || 'mp4',
+            });
+          }
+        }
+      }
+    }
+
+    // SERIES - fetch per category to avoid truncation
+    const seriesCatsRes = await fetch(buildApiUrl(creds, 'get_series_categories'), { cache: 'no-store' });
+    const seriesCats = await seriesCatsRes.json().catch(() => []);
+    
+    if (Array.isArray(seriesCats)) {
+      for (const cat of seriesCats) {
+        const catStreamsRes = await fetch(buildApiUrl(creds, 'get_series', { category_id: String(cat.category_id) }), { cache: 'no-store' });
+        const catStreams = await catStreamsRes.json().catch(() => []);
+        
+        if (Array.isArray(catStreams)) {
+          for (const item of catStreams) {
+            streams.push({
+              stream_id: parseInt(item.series_id),
+              name: item.name,
+              type: 'series',
+              stream_icon: item.cover || item.stream_icon,
+              category_id: String(cat.category_id),
+              category_name: cat.category_name,
+              container_extension: 'mp4',
+            });
+          }
+        }
+      }
+    }
 
     return NextResponse.json({ streams });
   } catch (err: any) {
