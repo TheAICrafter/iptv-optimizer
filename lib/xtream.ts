@@ -11,6 +11,7 @@ export interface XtreamStream {
   category_id?: string;
   category_name?: string;
   type: 'live' | 'vod' | 'series';
+  container_extension?: string;
 }
 
 export function normalizeServer(raw: string): string {
@@ -43,9 +44,12 @@ export function streamUrl(creds: XtreamCredentials, stream: XtreamStream): strin
   if (stream.type === 'live') {
     return `${base}/live/${creds.username}/${creds.password}/${stream.stream_id}.ts`;
   } else if (stream.type === 'vod') {
-    return `${base}/movie/${creds.username}/${creds.password}/${stream.stream_id}.mp4`;
+    const ext = stream.container_extension || 'mp4';
+    return `${base}/movie/${creds.username}/${creds.password}/${stream.stream_id}.${ext}`;
   } else {
-    return `${base}/series/${creds.username}/${creds.password}/${stream.stream_id}.mp4`;
+    // series episodes
+    const ext = stream.container_extension || 'mkv';
+    return `${base}/series/${creds.username}/${creds.password}/${stream.stream_id}.${ext}`;
   }
 }
 
