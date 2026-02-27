@@ -40,11 +40,12 @@ export async function POST(req: NextRequest) {
     const seriesCatMap: Record<string, string> = {};
     if (Array.isArray(seriesCategories)) seriesCategories.forEach((c: any) => seriesCatMap[c.category_id] = c.category_name);
 
-    // Fetch episodes for each series (batched to avoid timeout)
+    // Fetch episodes for each series (batched to stay within timeout)
     const seriesEpisodes: XtreamStream[] = [];
     if (Array.isArray(seriesList) && seriesList.length > 0) {
       const BATCH = 10;
-      for (let i = 0; i < Math.min(seriesList.length, 200); i += BATCH) {
+      const limit = Math.min(seriesList.length, 200);
+      for (let i = 0; i < limit; i += BATCH) {
         const batch = seriesList.slice(i, i + BATCH);
         const results = await Promise.allSettled(
           batch.map((s: any) =>
@@ -68,17 +69,19 @@ export async function POST(req: NextRequest) {
             if (!ep.id) continue;
             seriesEpisodes.push({
               stream_id: parseInt(ep.id),
-              name: `${seriesEntry.name} - S${String(ep.season).padStart(2,'0')}E${String(ep.episode_num).padStart(2,'0')}${ep.title ? ' - ' + ep.title : ''}`,
+              name: `${seriesEntry.name} - S${String(ep.season).padStart(2, '0')}E${String(ep.episode_num).padStart(2, '0')}${ep.title ? ' - ' + ep.title : ''}`,
               type: 'series' as const,
               stream_icon: seriesEntry.cover || seriesEntry.stream_icon,
               category_id: seriesEntry.category_id,
               category_name: seriesCatMap[seriesEntry.category_id] || '',
+              container_extension: ep.container_extension || 'mkv',
             });
           }
         }
       }
     }
 
+    // Also pass container_extension for VOD streams
     const streams: XtreamStream[] = [
       ...(Array.isArray(liveStreamsRaw) ? liveStreamsRaw.map((s: any) => ({
         stream_id: parseInt(s.stream_id),
@@ -86,7 +89,7 @@ export async function POST(req: NextRequest) {
         type: 'live' as const,
         stream_icon: s.stream_icon,
         category_id: s.category_id,
-        category_name: liveCatMap[s.category_id] || ''
+        category_name: liveCatMap[s.category_id] || '',
       })) : []),
       ...(Array.isArray(vodStreamsRaw) ? vodStreamsRaw.map((s: any) => ({
         stream_id: parseInt(s.stream_id),
@@ -94,7 +97,8 @@ export async function POST(req: NextRequest) {
         type: 'vod' as const,
         stream_icon: s.stream_icon,
         category_id: s.category_id,
-        category_name: vodCatMap[s.category_id] || ''
+        category_name: vodCatMap[s.category_id] || '',
+        container_extension: s.container_extension || 'mp4',
       })) : []),
       ...seriesEpisodes,
     ];
