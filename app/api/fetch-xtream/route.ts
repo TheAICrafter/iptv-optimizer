@@ -89,9 +89,9 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // SERIES - fetch per category to avoid truncation
+    // TEMP: Skip series to test timeout - // SERIES - fetch per category to avoid truncation
     const seriesCatsRes = await fetch(buildApiUrl(creds, 'get_series_categories'), { cache: 'no-store' });
-    const seriesCats = await seriesCatsRes.json().catch(() => []);
+    /*const seriesCats = await seriesCatsRes.json().catch(() => []);
     
     if (Array.isArray(seriesCats)) {
       for (const cat of seriesCats) {
@@ -112,7 +112,7 @@ export async function POST(req: NextRequest) {
           }
         }
       }
-    }
+    } */
 
     return NextResponse.json({ streams });
   } catch (err: any) {
