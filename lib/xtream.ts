@@ -16,7 +16,9 @@ export interface XtreamStream {
 
 export function normalizeServer(raw: string): string {
   let url = raw.trim();
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      if (url.startsWith('https://')) {
+            url = 'http://' + url.slice(8);
+          } else if (!url.startsWith('http://')) {
     url = 'http://' + url;
   }
   return url.replace(/\/$/, '');
