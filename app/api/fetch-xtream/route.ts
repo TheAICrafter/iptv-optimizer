@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { normalizeServer, XtreamCredentials, XtreamStream } from '@/lib/xtream';
+import { normalizeServer, XtreamCredentials } from '@/lib/xtream';
 
 export const maxDuration = 60;
 
@@ -38,83 +38,41 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Ogiltiga inloggningsuppgifter' }, { status: 401 });
     }
 
-    const streams: XtreamStream[] = [];
+    // Fetch ONLY categories - no stream data yet!
+    const [liveCatsRes, vodCatsRes, seriesCatsRes] = await Promise.all([
+      fetch(buildApiUrl(creds, 'get_live_categories'), { cache: 'no-store' }),
+      fetch(buildApiUrl(creds, 'get_vod_categories'), { cache: 'no-store' }),
+      fetch(buildApiUrl(creds, 'get_series_categories'), { cache: 'no-store' }),
+    ]);
 
-    // LIVE - fetch per category to avoid truncation
-    const liveCatsRes = await fetch(buildApiUrl(creds, 'get_live_categories'), { cache: 'no-store' });
-    const liveCats = await liveCatsRes.json().catch(() => []);
-    
-    if (Array.isArray(liveCats)) {
-      for (const cat of liveCats) {
-        const catStreamsRes = await fetch(buildApiUrl(creds, 'get_live_streams', { category_id: String(cat.category_id) }), { cache: 'no-store' });
-        const catStreams = await catStreamsRes.json().catch(() => []);
-        
-        if (Array.isArray(catStreams)) {
-          for (const item of catStreams) {
-            streams.push({
-              stream_id: parseInt(item.stream_id),
-              name: item.name,
-              type: 'live',
-              stream_icon: item.stream_icon,
-              category_id: String(cat.category_id),
-              category_name: cat.category_name,
-            });
-          }
-        }
-      }
-    }
+    const liveCategories = await liveCatsRes.json().catch(() => []);
+    const vodCategories = await vodCatsRes.json().catch(() => []);
+    const seriesCategories = await seriesCatsRes.json().catch(() => []);
 
-    // VOD - fetch per category to avoid truncation
-    const vodCatsRes = await fetch(buildApiUrl(creds, 'get_vod_categories'), { cache: 'no-store' });
-    const vodCats = await vodCatsRes.json().catch(() => []);
-    
-    if (Array.isArray(vodCats)) {
-      for (const cat of vodCats) {
-        const catStreamsRes = await fetch(buildApiUrl(creds, 'get_vod_streams', { category_id: String(cat.category_id) }), { cache: 'no-store' });
-        const catStreams = await catStreamsRes.json().catch(() => []);
-        
-        if (Array.isArray(catStreams)) {
-          for (const item of catStreams) {
-            streams.push({
-              stream_id: parseInt(item.stream_id),
-              name: item.name,
-              type: 'vod',
-              stream_icon: item.stream_icon,
-              category_id: String(cat.category_id),
-              category_name: cat.category_name,
-              container_extension: item.container_extension || 'mp4',
-            });
-          }
-        }
-      }
-    }
+    // Return categories with metadata only
+    const categories = {
+      live: Array.isArray(liveCategories) ? liveCategories.map((c: any) => ({
+        category_id: String(c.category_id),
+        category_name: c.category_name,
+        type: 'live' as const,
+      })) : [],
+      vod: Array.isArray(vodCategories) ? vodCategories.map((c: any) => ({
+        category_id: String(c.category_id),
+        category_name: c.category_name,
+        type: 'vod' as const,
+      })) : [],
+      series: Array.isArray(seriesCategories) ? seriesCategories.map((c: any) => ({
+        category_id: String(c.category_id),
+        category_name: c.category_name,
+        type: 'series' as const,
+      })) : [],
+    };
 
-    // TEMP: Skip series to test timeout - // SERIES - fetch per category to avoid truncation
-    const seriesCatsRes = await fetch(buildApiUrl(creds, 'get_series_categories'), { cache: 'no-store' });
-    /*const seriesCats = await seriesCatsRes.json().catch(() => []);
-    
-    if (Array.isArray(seriesCats)) {
-      for (const cat of seriesCats) {
-        const catStreamsRes = await fetch(buildApiUrl(creds, 'get_series', { category_id: String(cat.category_id) }), { cache: 'no-store' });
-        const catStreams = await catStreamsRes.json().catch(() => []);
-        
-        if (Array.isArray(catStreams)) {
-          for (const item of catStreams) {
-            streams.push({
-              stream_id: parseInt(item.series_id),
-              name: item.name,
-              type: 'series',
-              stream_icon: item.cover || item.stream_icon,
-              category_id: String(cat.category_id),
-              category_name: cat.category_name,
-              container_extension: 'mp4',
-            });
-          }
-        }
-      }
-    } */
-
-    return NextResponse.json({ streams });
+    // Return categories + credentials for later use
+    return NextResponse.json({ 
+      categories,
+      credentials: { server: creds.server, username, password }
+    });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
