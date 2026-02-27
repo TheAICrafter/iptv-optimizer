@@ -13,7 +13,7 @@ export async function POST(req: NextRequest) {
     const m3uContent = '#EXTM3U\n' + entries.join('\n');
     const { data, error } = await supabase
       .from('playlists')
-      .insert({ entries: { streams, creds: { server: creds.server, username: creds.username } }, name: `Playlist ${new Date().toISOString()}` })
+      .insert({ entries: { streams, creds: { server: creds.server, username: creds.username, password: creds.password } }, name: `Playlist ${new Date().toISOString()}` })
       .select('id')
       .single();
     if (error) throw error;
