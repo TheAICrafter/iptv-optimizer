@@ -40,46 +40,18 @@ export async function POST(req: NextRequest) {
     const seriesCatMap: Record<string, string> = {};
     if (Array.isArray(seriesCategories)) seriesCategories.forEach((c: any) => seriesCatMap[c.category_id] = c.category_name);
 
-    // Fetch episodes for each series (batched to stay within timeout)
-    const seriesEpisodes: XtreamStream[] = [];
-    if (Array.isArray(seriesList) && seriesList.length > 0) {
-      const BATCH = 10;
-      const limit = Math.min(seriesList.length, 200);
-      for (let i = 0; i < limit; i += BATCH) {
-        const batch = seriesList.slice(i, i + BATCH);
-        const results = await Promise.allSettled(
-          batch.map((s: any) =>
-            fetch(buildApiUrl(creds, 'get_series_info', { series_id: String(s.series_id) }), { cache: 'no-store' })
-              .then(r => r.json())
-              .catch(() => null)
-          )
-        );
-        for (let j = 0; j < batch.length; j++) {
-          const seriesEntry = batch[j];
-          const result = results[j];
-          if (result.status !== 'fulfilled' || !result.value) continue;
-          const info = result.value;
-          const episodes: any[] = [];
-          if (info.episodes && typeof info.episodes === 'object') {
-            for (const season of Object.values(info.episodes)) {
-              if (Array.isArray(season)) episodes.push(...season);
-            }
-          }
-          for (const ep of episodes) {
-            if (!ep.id) continue;
-            seriesEpisodes.push({
-              stream_id: parseInt(ep.id),
-              name: `${seriesEntry.name} - S${String(ep.season).padStart(2, '0')}E${String(ep.episode_num).padStart(2, '0')}${ep.title ? ' - ' + ep.title : ''}`,
-              type: 'series' as const,
-              stream_icon: seriesEntry.cover || seriesEntry.stream_icon,
-              category_id: seriesEntry.category_id,
-              category_name: seriesCatMap[seriesEntry.category_id] || '',
-              container_extension: ep.container_extension || 'mkv',
-            });
-          }
-        }
-      }
-    }
+    // Map all series directly without fetching per-series episode info (avoids timeout)
+    const seriesStreams: XtreamStream[] = Array.isArray(seriesList)
+      ? seriesList.map((s: any) => ({
+          stream_id: parseInt(s.series_id),
+          name: s.name,
+          type: 'series' as const,
+          stream_icon: s.cover || s.stream_icon,
+          category_id: s.category_id,
+          category_name: seriesCatMap[s.category_id] || s.category_id || '',
+          container_extension: 'mkv',
+        }))
+      : [];
 
     // Also pass container_extension for VOD streams
     const streams: XtreamStream[] = [
@@ -100,9 +72,8 @@ export async function POST(req: NextRequest) {
         category_name: vodCatMap[s.category_id] || '',
         container_extension: s.container_extension || 'mp4',
       })) : []),
-      ...seriesEpisodes,
+      ...seriesStreams,
     ];
-
     return NextResponse.json({ streams });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
